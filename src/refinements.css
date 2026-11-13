@@ -29,7 +29,17 @@
   font-size: 10px;
   padding: 10px;
 }
-@media(max-width:760px){.mobile-break{display:block}.hero-copy h2{font-size:34px}.hero-copy h2 em{font-size:1.07em}}
+@media (max-width: 760px) {
+  .mobile-break {
+    display: block;
+  }
+  .hero-copy h2 {
+    font-size: 34px;
+  }
+  .hero-copy h2 em {
+    font-size: 1.07em;
+  }
+}
 @media (min-width: 761px) {
   .page-heading p,
   .flow-heading p {

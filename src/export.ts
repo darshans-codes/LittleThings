@@ -21,26 +21,18 @@ function image(src: string): Promise<HTMLImageElement> {
 }
 function fit(
   ctx: CanvasRenderingContext2D,
-  img: HTMLImageElement,
+  img: HTMLImageElement | HTMLVideoElement,
   x: number,
   y: number,
   w: number,
   h: number,
 ) {
-  const scale = Math.max(w / img.width, h / img.height);
+  const iw = img instanceof HTMLVideoElement ? img.videoWidth : img.width,
+    ih = img instanceof HTMLVideoElement ? img.videoHeight : img.height;
+  const scale = Math.max(w / iw, h / ih);
   const sw = w / scale,
     sh = h / scale;
-  ctx.drawImage(
-    img,
-    (img.width - sw) / 2,
-    (img.height - sh) / 2,
-    sw,
-    sh,
-    x,
-    y,
-    w,
-    h,
-  );
+  ctx.drawImage(img, (iw - sw) / 2, (ih - sh) / 2, sw, sh, x, y, w, h);
 }
 function wrap(
   ctx: CanvasRenderingContext2D,
@@ -80,7 +72,7 @@ export async function makeCollage(
   ctx.font = `italic ${w * 0.065}px Georgia`;
   ctx.fillText(`Happy birthday, ${person.name}`, w / 2, h * 0.1, w - pad * 2);
   const chosen = photos.slice(0, 4);
-  const images = await Promise.all(chosen.map((p) => image(p.src)));
+  const images = await Promise.all(chosen.map((p) => image(p.poster || p.src)));
   if (!images.length) {
     ctx.font = `italic ${Math.min(w * 0.052, h * 0.05)}px Georgia`;
     ctx.fillStyle = "#775d79";
@@ -130,10 +122,11 @@ export async function makeVideo(
       "Video export is not supported here. Try Chrome or export a collage.",
     );
   const mimeType = [
+    "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
     "video/mp4;codecs=avc1.42E01E",
     "video/mp4;codecs=avc1",
     "video/mp4",
-    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp9,opus",
     "video/webm",
   ].find((t) => MediaRecorder.isTypeSupported(t));
   if (!mimeType)
@@ -143,20 +136,90 @@ export async function makeVideo(
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d")!;
-  const imgs = await Promise.all(photos.map((p) => image(p.src)));
-  const stream = canvas.captureStream(30),
-    recorder = new MediaRecorder(stream, {
-      mimeType,
-      videoBitsPerSecond: 5000000,
+  const audioContext = new AudioContext();
+  await audioContext.resume();
+  const audioDestination = audioContext.createMediaStreamDestination();
+  const elements: HTMLMediaElement[] = [];
+  const attach = (media: HTMLMediaElement, volume: number) => {
+    const node = audioContext.createMediaElementSource(media),
+      gain = audioContext.createGain();
+    gain.gain.value = volume;
+    node.connect(gain).connect(audioDestination);
+    elements.push(media);
+  };
+  let imgs: (HTMLImageElement | HTMLVideoElement)[];
+  try {
+    imgs = await Promise.all(
+      photos.map(async (p) => {
+        if (p.kind !== "video") return image(p.src);
+        const video = document.createElement("video");
+        video.playsInline = true;
+        video.preload = "auto";
+        video.src = p.src;
+        await new Promise<void>((resolve, reject) => {
+          const t = setTimeout(
+            () => reject(new Error("A video could not be opened.")),
+            15000,
+          );
+          video.onloadeddata = () => {
+            clearTimeout(t);
+            resolve();
+          };
+          video.onerror = () => {
+            clearTimeout(t);
+            reject(new Error("A video format is not supported here."));
+          };
+        });
+        attach(video, story.voice?.src?.length ? 0.4 : 1);
+        return video;
+      }),
+    );
+    for (const [source, gain] of [
+      [story.music, story.voice?.src?.length ? 0.14 : 0.35],
+      [story.voice, 1],
+    ] as const) {
+      if (source) {
+        const track = new Audio(source.src);
+        attach(track, gain);
+        await track.play();
+      }
+    }
+  } catch (e) {
+    elements.forEach((el) => {
+      el.pause();
+      el.removeAttribute("src");
+      el.load();
     });
+    await audioContext.close();
+    throw e;
+  }
+  const stream = canvas.captureStream(30),
+    recorder = new MediaRecorder(
+      new MediaStream([
+        ...stream.getVideoTracks(),
+        ...audioDestination.stream.getAudioTracks(),
+      ]),
+      {
+        mimeType,
+        videoBitsPerSecond: 5000000,
+      },
+    );
   const chunks: Blob[] = [];
   return new Promise((resolve, reject) => {
+    let lastScene = -1;
     let frame = 0,
       settled = false;
     const start = performance.now();
     function cleanup() {
       cancelAnimationFrame(frame);
       stream.getTracks().forEach((t) => t.stop());
+      audioDestination.stream.getTracks().forEach((t) => t.stop());
+      elements.forEach((el) => {
+        el.pause();
+        el.removeAttribute("src");
+        el.load();
+      });
+      void audioContext.close();
       signal.removeEventListener("abort", abort);
     }
     function abort() {
@@ -197,6 +260,27 @@ export async function makeVideo(
         const position = t * imgs.length,
           i = Math.min(Math.floor(position), imgs.length - 1),
           zoom = 1 + (position % 1) * 0.035;
+        if (i !== lastScene) {
+          if (lastScene >= 0 && imgs[lastScene] instanceof HTMLVideoElement)
+            (imgs[lastScene] as HTMLVideoElement).pause();
+          lastScene = i;
+          if (imgs[i] instanceof HTMLVideoElement) {
+            const video = imgs[i] as HTMLVideoElement;
+            video.currentTime = 0;
+            void video.play().catch(() => {
+              if (!settled) {
+                settled = true;
+                recorder.stop();
+                cleanup();
+                reject(
+                  new Error(
+                    "The clip could not play. Try another video format.",
+                  ),
+                );
+              }
+            });
+          }
+        }
         ctx.save();
         ctx.translate(w / 2, h / 2);
         ctx.scale(zoom, zoom);
@@ -226,6 +310,9 @@ export async function makeVideo(
       ctx.font = `${w * 0.025}px sans-serif`;
       ctx.fillText("WITH LOVE, ALWAYS", w / 2, h * 0.19);
       if (t > 0.88 || !imgs.length) {
+        imgs.forEach((img) => {
+          if (img instanceof HTMLVideoElement) img.pause();
+        });
         ctx.fillStyle = "rgba(47,33,52,.94)";
         ctx.fillRect(0, 0, w, h);
         ctx.fillStyle = "#f5e1ac";
@@ -253,15 +340,31 @@ export async function saveExport(blob: Blob, filename: string, share = false) {
       reader.onerror = reject;
       reader.readAsDataURL(blob);
     });
+    const exportPath = `keepsake-share/keepsake-export-${crypto.randomUUID()}.${
+      filename
+        .split(".")
+        .pop()
+        ?.replace(/[^a-z0-9]/gi, "") || "bin"
+    }`;
     const result = await Filesystem.writeFile({
-      path: filename,
+      path: exportPath,
       data,
       directory: Directory.Cache,
+      recursive: true,
     });
     await Share.share({
       title: "A little something for your birthday",
       files: [result.uri],
     });
+    setTimeout(
+      () => {
+        void Filesystem.deleteFile({
+          path: exportPath,
+          directory: Directory.Cache,
+        }).catch(() => {});
+      },
+      10 * 60 * 1000,
+    );
     return;
   }
   const file = new File([blob], filename, { type: blob.type });
@@ -275,4 +378,25 @@ export async function saveExport(blob: Blob, filename: string, share = false) {
   a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+export async function clearTemporaryExports() {
+  if (!Capacitor.isNativePlatform()) return;
+  try {
+    const result = await Filesystem.readdir({
+      path: "keepsake-share",
+      directory: Directory.Cache,
+    });
+    for (const file of result.files) {
+      if (
+        file.type === "file" &&
+        /^keepsake-export-[a-f0-9-]+\.[a-z0-9]+$/i.test(file.name)
+      )
+        await Filesystem.deleteFile({
+          path: `keepsake-share/${file.name}`,
+          directory: Directory.Cache,
+        });
+    }
+  } catch {
+    /* A missing or inaccessible cache must not block vault access. */
+  }
 }

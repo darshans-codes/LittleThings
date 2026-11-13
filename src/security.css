@@ -1,0 +1,172 @@
+.vault-page {
+  max-width: none;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 32px 20px;
+  background:
+    radial-gradient(ellipse at top, #ece3ee, transparent 70%), #f8f6f2;
+}
+.vault-card {
+  width: 100%;
+  max-width: 460px;
+  background: #fffcf7;
+  border: 1px solid #e5dce6;
+  box-shadow: 0 20px 70px #4b365311;
+  border-radius: 24px;
+  padding: 38px;
+}
+.vault-card > .brand {
+  margin-bottom: 36px;
+}
+.vault-symbol {
+  width: 65px;
+  height: 65px;
+  display: grid;
+  place-items: center;
+  border-radius: 20px;
+  background: #eee5ee;
+  color: #755379;
+  margin-bottom: 28px;
+}
+.vault-card h1 {
+  font-size: 37px;
+}
+.vault-card > p {
+  font-size: 12px;
+  line-height: 1.9;
+  color: #8a7887;
+  margin: 20px 0;
+}
+.vault-card .button {
+  margin-top: 16px;
+}
+.vault-card .fine-print {
+  margin: 14px 0;
+  font-size: 11px;
+}
+.privacy-center > .button {
+  margin-top: 12px;
+}
+.privacy-center {
+  grid-column: 1/-1;
+}
+.privacy-center form {
+  padding: 22px;
+  border: 1px solid #dfd1df;
+  border-radius: 10px;
+  margin-top: 20px;
+}
+.director {
+  border: 1px solid #dcccdf;
+  border-radius: 13px;
+  padding: 22px;
+  background: #f2eaf3;
+  margin-bottom: 25px;
+}
+.director h3 {
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.5px;
+}
+.director p {
+  font-size: 11px;
+  line-height: 1.8;
+  color: #8d778c;
+  margin: 10px 0;
+}
+.director textarea {
+  margin-top: 10px;
+}
+.director-status {
+  font-size: 10px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  color: #877285;
+}
+.director-actions {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin: 15px 0;
+}
+.director-consent {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  line-height: 1.8;
+  font-size: 10px;
+}
+.director-consent input {
+  width: 16px;
+  margin: 2px 0;
+  flex-shrink: 0;
+}
+.director-plan {
+  padding: 17px;
+  background: #fffcf9;
+  border-radius: 9px;
+  margin-top: 15px;
+}
+.director-plan ol {
+  font-size: 11px;
+  padding-left: 20px;
+  line-height: 2;
+}
+.director .error-text {
+  color: #a44646;
+}
+.pin-button {
+  position: absolute;
+  top: 11px;
+  left: 11px;
+  border-radius: 50%;
+  width: 29px;
+  height: 29px;
+  display: grid;
+  place-items: center;
+  background: #fffcf4dd;
+  color: #59415e;
+}
+.media-video {
+  height: 100%;
+  width: 100%;
+  object-fit: cover;
+}
+.audio-options {
+  padding: 16px;
+  background: #eee8ed;
+  border-radius: 9px;
+  margin: 18px 0;
+}
+.audio-options input {
+  margin: 8px 0;
+}
+.audio-options audio {
+  width: 100%;
+  height: 36px;
+}
+.vault-card .error-text {
+  color: #a44646;
+}
+@media (max-width: 760px) {
+  .vault-card {
+    padding: 28px;
+  }
+  .vault-card h1 {
+    font-size: 32px;
+  }
+  .director {
+    padding: 18px;
+  }
+}
+.photo-tile {
+  position: relative;
+}
+.photo-select:disabled {
+  opacity: 1;
+}
+.photo-tile .pin-button {
+  z-index: 2;
+}

@@ -47,10 +47,20 @@ import {
   type State,
   type Story,
 } from "./model";
-import { loadState, saveState, importImage } from "./storage";
+import {
+  loadState,
+  saveState,
+  importImage,
+  importVideo,
+  fileData,
+} from "./storage";
 import { makeCollage, makeVideo, saveExport } from "./export";
 import "./styles.css";
 import "./refinements.css";
+import "./security.css";
+import SecurityCenter from "./SecurityCenter";
+import Director from "./Director";
+import type { DirectorPlan } from "./edit-plan.mjs";
 
 type Page = "Home" | "People" | "Upcoming" | "Memories" | "Settings";
 type Flow = "review" | "studio" | "export";
@@ -67,7 +77,7 @@ const dateToday = new Intl.DateTimeFormat("en", {
   day: "numeric",
 }).format(new Date());
 
-export default function App() {
+export default function App({ onLock }: { onLock: () => Promise<void> }) {
   const [state, setState] = useState<State>();
   const [page, setPage] = useState<Page>("Home");
   const [personId, setPersonId] = useState("maya");
@@ -79,21 +89,19 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState("");
   const [saveError, setSaveError] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const saveQueue = useRef(Promise.resolve());
   useEffect(() => {
     loadState()
       .then((s) => setState(s || seed()))
       .catch(() => {
-        setState(seed());
-        setSaveError(true);
+        setLoadError(true);
       });
   }, []);
   useEffect(() => {
     if (!state) return;
-    saveQueue.current = saveQueue.current
-      .catch(() => {})
-      .then(() => saveState(state))
+    saveQueue.current = saveState(state)
       .then(() => setSaveError(false))
       .catch(() => setSaveError(true));
   }, [state]);
@@ -108,6 +116,21 @@ export default function App() {
   function update(fn: (s: State) => State) {
     setState((s) => (s ? fn(s) : s));
   }
+  if (loadError)
+    return (
+      <main className="vault-page">
+        <section className="vault-card">
+          <h1>Your vault needs attention.</h1>
+          <p>
+            The saved data could not be opened. It has not been replaced. Lock
+            and retry, or restore an encrypted backup after unlocking.
+          </p>
+          <button className="button plum" onClick={() => void onLock()}>
+            Lock and retry
+          </button>
+        </section>
+      </main>
+    );
   if (!state)
     return (
       <div className="boot">
@@ -134,8 +157,27 @@ export default function App() {
   }
   async function importFiles(files: FileList | null) {
     if (!files || !person) return;
+    if (
+      Array.from(files).reduce((sum, file) => sum + file.size, 0) >
+      80 * 1024 * 1024
+    ) {
+      setToast(
+        "Choose a smaller batch, up to 80 MB total. Your originals stay untouched.",
+      );
+      return;
+    }
+    if (
+      state!.photos.reduce((sum, p) => sum + p.src.length, 0) >
+      54 * 1024 * 1024
+    ) {
+      setToast(
+        "This local vault is near its media limit. Save a backup and remove unneeded memories before importing more.",
+      );
+      return;
+    }
     setBusy(`Preparing ${files.length} photo${files.length === 1 ? "" : "s"}…`);
     const added: Photo[] = [];
+    let importedSize=state!.photos.reduce((sum,p)=>sum+p.src.length+(p.poster?.length||0),0);
     let rejected = 0;
     const existing = new Set(
       state!.photos
@@ -145,7 +187,12 @@ export default function App() {
     );
     for (const file of Array.from(files).slice(0, 100)) {
       try {
-        const image = await importImage(file);
+        const image = file.type.startsWith("video/")
+          ? await importVideo(file)
+          : await importImage(file);
+        const incomingSize=image.src.length+('poster' in image&&typeof image.poster==='string'?image.poster.length:0);
+        if(importedSize+incomingSize>54*1024*1024){rejected++;continue;}
+        importedSize+=incomingSize;
         const duplicate = existing.has(image.hash);
         existing.add(image.hash);
         added.push({
@@ -766,6 +813,11 @@ export default function App() {
                       </div>
                     </div>
                     <div className="settings-layout">
+                      <SecurityCenter
+                        state={state}
+                        onRestore={setState}
+                        onLock={onLock}
+                      />
                       <section className="settings-card">
                         <ShieldCheck size={27} />
                         <h2>Your memories stay here.</h2>
@@ -848,16 +900,12 @@ export default function App() {
                         <button
                           className="button outline full"
                           onClick={() => {
-                            const blob = new Blob(
-                              [JSON.stringify(state, null, 2)],
-                              { type: "application/json" },
-                            );
-                            saveExport(blob, "keepsake-backup.json").catch(() =>
-                              setToast("Backup could not be saved."),
+                            setToast(
+                              "Use Save encrypted backup in Your private vault above.",
                             );
                           }}
                         >
-                          Download a private backup <Download size={16} />
+                          Backup help <LockKeyhole size={16} />
                         </button>
                         <p className="fine-print">
                           Backups include your imported photos. Store them
@@ -917,7 +965,7 @@ export default function App() {
           hidden
           ref={input}
           type="file"
-          accept="image/jpeg,image/png,image/webp"
+          accept="image/jpeg,image/png,image/webp,video/mp4,video/webm"
           multiple
           onChange={(e) => importFiles(e.target.files)}
         />
@@ -1292,6 +1340,8 @@ function CelebrationFlow({
   const [tone, setTone] = useState(story?.tone || person.tone);
   const [duration, setDuration] = useState(story?.duration || 30);
   const [format, setFormat] = useState(story?.format || "Story");
+  const [music, setMusic] = useState(story?.music),
+    [voice, setVoice] = useState(story?.voice);
   const [closing, setClosing] = useState(
     story?.closing ||
       `Happy birthday, ${person.name}. Here’s to more moments like these.`,
@@ -1302,6 +1352,28 @@ function CelebrationFlow({
   const [progress, setProgress] = useState<number>();
   const [exportBlob, setExportBlob] = useState<Blob>();
   const [exportError, setExportError] = useState("");
+  const currentDraft = useRef<Story | undefined>(undefined);
+  currentDraft.current = {
+    id: story?.id || `draft-${person.id}`,
+    personId: person.id,
+    title: `For ${person.name}, with love`,
+    tone,
+    duration,
+    format,
+    photoIds: photos.filter((p) => p.selected).map((p) => p.id),
+    created: story?.created || new Date().toISOString(),
+    closing,
+    music,
+    voice,
+  };
+  useEffect(() => {
+    const draft = currentDraft.current;
+    if (!draft || flow === "review") return;
+    update((s) => ({
+      ...s,
+      stories: [draft, ...s.stories.filter((st) => st.personId !== person.id)],
+    }));
+  }, [tone, duration, format, closing, music, voice, flow]);
   const abort = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => abort.current?.abort(), []);
   const selected = photos.filter((p) => p.selected);
@@ -1346,6 +1418,8 @@ function CelebrationFlow({
       photoIds: selected.map((p) => p.id),
       created: story?.created || new Date().toISOString(),
       closing,
+      music,
+      voice,
     };
     update((s) => ({
       ...s,
@@ -1507,7 +1581,9 @@ function CelebrationFlow({
               >
                 Start with a personal birthday card <ArrowRight size={14} />
               </button>
-              <span>JPG, PNG, WebP · Up to 100 photos per import</span>
+              <span>
+                JPG, PNG, WebP, MP4, WebM · Up to 100 items per import
+              </span>
             </div>
           ) : (
             <>
@@ -1542,17 +1618,31 @@ function CelebrationFlow({
                       className="photo-select"
                       aria-label={`${p.selected ? "Deselect" : "Select"} ${p.name}`}
                       aria-pressed={p.selected}
+                      disabled={p.pinned}
                       onClick={() =>
                         patchPhoto(p.id, { selected: !p.selected })
                       }
                     >
-                      <img src={p.src} alt={p.name} />
+                      <img src={p.poster || p.src} alt={p.name} />
                       <span className="photo-check">
                         {p.selected && <Check size={16} />}
                       </span>
                       {p.reason && (
                         <span className="photo-flag">{p.reason}</span>
                       )}
+                    </button>
+                    <button
+                      className="pin-button"
+                      aria-label={`${p.pinned ? "Unpin" : "Pin"} ${p.name}`}
+                      aria-pressed={!!p.pinned}
+                      onClick={() =>
+                        patchPhoto(p.id, {
+                          pinned: !p.pinned,
+                          selected: p.pinned ? p.selected : true,
+                        })
+                      }
+                    >
+                      {p.pinned ? "♥" : "♡"}
                     </button>
                     <div className="photo-caption">
                       <span>{p.name}</span>
@@ -1628,11 +1718,22 @@ function CelebrationFlow({
               className={`story-preview ${tone.toLowerCase()} format-${format.toLowerCase()}`}
             >
               {activePhoto ? (
-                <img
-                  key={activePhoto.id}
-                  src={activePhoto.src}
-                  alt={activePhoto.name}
-                />
+                activePhoto.kind === "video" ? (
+                  <video
+                    className="media-video"
+                    src={activePhoto.src}
+                    poster={activePhoto.poster}
+                    controls
+                    playsInline
+                    preload="metadata"
+                  />
+                ) : (
+                  <img
+                    key={activePhoto.id}
+                    src={activePhoto.src}
+                    alt={activePhoto.name}
+                  />
+                )
               ) : (
                 <div className="text-preview-bg" />
               )}
@@ -1689,11 +1790,53 @@ function CelebrationFlow({
             </div>
             <p className="fine-print">
               <VolumeX size={13} />
-              This first build exports silent video. Add a licensed soundtrack
-              in your sharing app.
+              Real video clips keep their original sound. Add music or a
+              recorded message in the finishing touches.
             </p>
           </div>
           <div className="studio-settings">
+            <Director
+              photos={photos}
+              onApply={(plan: DirectorPlan) => {
+                const keep = photos
+                  .filter((p) => p.pinned && !plan.sequence.includes(p.id))
+                  .map((p) => p.id);
+                const ids = [...plan.sequence, ...keep];
+                update((s) => {
+                  const own = s.photos.filter((p) => p.personId === person.id);
+                  const ordered = ids
+                    .map((id) => own.find((p) => p.id === id)!)
+                    .filter(Boolean)
+                    .map((p) => ({
+                      ...p,
+                      selected: true,
+                      caption:
+                        plan.captions.find((c) => c.id === p.id)?.text ||
+                        p.caption,
+                    }));
+                  const rest = own
+                    .filter((p) => !ids.includes(p.id))
+                    .map((p) => ({ ...p, selected: false }));
+                  return {
+                    ...s,
+                    photos: [
+                      ...s.photos.filter((p) => p.personId !== person.id),
+                      ...ordered,
+                      ...rest,
+                    ],
+                  };
+                });
+                setTone(plan.tone);
+                setDuration(plan.duration);
+                setFormat(plan.format);
+                setClosing(plan.closing);
+                setSlide(0);
+                setExportBlob(undefined);
+                notify(
+                  "Director plan applied. Review your memories before exporting.",
+                );
+              }}
+            />
             <div className="panel-label">
               <SlidersHorizontal size={17} />
               THE FINISHING TOUCHES
@@ -1702,6 +1845,62 @@ function CelebrationFlow({
               Make it feel <em>like them.</em>
             </h2>
             <label>Find your mood</label>
+            <div className="audio-options">
+              <strong>Your real sound.</strong>
+              {(["music", "voice"] as const).map((kind) => (
+                <label key={kind}>
+                  {kind === "music"
+                    ? "Add licensed music"
+                    : "Add your recorded voice message"}
+                  <input
+                    type="file"
+                    accept="audio/mpeg,audio/wav,audio/ogg,audio/webm,audio/mp4"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = "";
+                      if (!file) return;
+                      if (
+                        file.size > 10 * 1024 * 1024 ||
+                        ![
+                          "audio/mpeg",
+                          "audio/wav",
+                          "audio/x-wav",
+                          "audio/ogg",
+                          "audio/webm",
+                          "audio/mp4",
+                        ].includes(file.type)
+                      ) {
+                        notify("Choose an audio file under 10 MB.");
+                        return;
+                      }
+                      try{const value = {src: await fileData(file),name: file.name};(kind === "music" ? setMusic : setVoice)(value);setExportBlob(undefined);}catch{notify('The audio file could not be read. Please try another file.');}
+                    }}
+                  />
+                  {(kind === "music" ? music : voice) && (
+                    <>
+                      <audio
+                        controls
+                        src={(kind === "music" ? music : voice)?.src}
+                      />
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => {
+                          (kind === "music" ? setMusic : setVoice)(undefined);
+                          setExportBlob(undefined);
+                        }}
+                      >
+                        Remove {kind}
+                      </button>
+                    </>
+                  )}
+                </label>
+              ))}
+              <p className="fine-print">
+                Music is softened when a voice message is present. Use audio you
+                have permission to share.
+              </p>
+            </div>
             <div className="tone-options">
               {tones.map((t) => (
                 <button
@@ -1889,7 +2088,12 @@ function CelebrationFlow({
               </div>
               <div>
                 <span>Video</span>
-                <strong>{duration}s · Silent</strong>
+                <strong>
+                  {duration}s ·{" "}
+                  {music || voice || selected.some((p) => p.kind === "video")
+                    ? "With audio"
+                    : "No added audio"}
+                </strong>
               </div>
             </div>
             <label>What would you like to make?</label>

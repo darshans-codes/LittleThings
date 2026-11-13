@@ -8,6 +8,9 @@ export type Person = {
   demo?: boolean;
 };
 export type Photo = {
+  kind?: "photo" | "video";
+  poster?: string;
+  pinned?: boolean;
   id: string;
   personId: string;
   src: string;
@@ -19,6 +22,8 @@ export type Photo = {
   demo?: boolean;
 };
 export type Story = {
+  music?: { src: string; name: string };
+  voice?: { src: string; name: string };
   id: string;
   personId: string;
   title: string;
