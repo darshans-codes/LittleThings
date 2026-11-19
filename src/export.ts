@@ -2,12 +2,9 @@ import { Capacitor } from "@capacitor/core";
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import type { Photo, Person, Story } from "./model";
-export const dimensions: Record<string, [number, number]> = {
-  Story: [720, 1280],
-  Square: [1080, 1080],
-  Feed: [864, 1080],
-  Landscape: [1280, 720],
-};
+import { createFilmSession, loadMedia } from "./film-session";
+import { dimensions, cropRect } from "./film-timeline";
+export { dimensions } from "./film-timeline";
 function image(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -26,13 +23,13 @@ function fit(
   y: number,
   w: number,
   h: number,
+  focalX = 0.5,
+  focalY = 0.5,
 ) {
   const iw = img instanceof HTMLVideoElement ? img.videoWidth : img.width,
     ih = img instanceof HTMLVideoElement ? img.videoHeight : img.height;
-  const scale = Math.max(w / iw, h / ih);
-  const sw = w / scale,
-    sh = h / scale;
-  ctx.drawImage(img, (iw - sw) / 2, (ih - sh) / 2, sw, sh, x, y, w, h);
+  const crop = cropRect(iw, ih, w, h, focalX, focalY);
+  ctx.drawImage(img, crop.x, crop.y, crop.width, crop.height, x, y, w, h);
 }
 function wrap(
   ctx: CanvasRenderingContext2D,
@@ -99,6 +96,8 @@ export async function makeCollage(
       h * 0.16 + Math.floor(i / cols) * (cellH + pad),
       cellW,
       cellH,
+      chosen[i].focalX,
+      chosen[i].focalY,
     ),
   );
   ctx.font = `${w * 0.027}px sans-serif`;
@@ -117,14 +116,13 @@ export async function makeVideo(
   progress: (n: number) => void,
   signal: AbortSignal,
 ): Promise<Blob> {
+  if (signal.aborted) throw new DOMException("Export cancelled", "AbortError");
   if (typeof MediaRecorder === "undefined")
     throw new Error(
-      "Video export is not supported here. Try Chrome or export a collage.",
+      "Video export is unavailable here. Export a collage instead.",
     );
   const mimeType = [
     "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
-    "video/mp4;codecs=avc1.42E01E",
-    "video/mp4;codecs=avc1",
     "video/mp4",
     "video/webm;codecs=vp9,opus",
     "video/webm",
@@ -136,201 +134,162 @@ export async function makeVideo(
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d")!;
-  const audioContext = new AudioContext();
-  await audioContext.resume();
-  const audioDestination = audioContext.createMediaStreamDestination();
-  const elements: HTMLMediaElement[] = [];
-  const attach = (media: HTMLMediaElement, volume: number) => {
-    const node = audioContext.createMediaElementSource(media),
-      gain = audioContext.createGain();
-    gain.gain.value = volume;
-    node.connect(gain).connect(audioDestination);
-    elements.push(media);
-  };
-  let imgs: (HTMLImageElement | HTMLVideoElement)[];
+  // Create and resume inside the export gesture; preparation does not start the film clock.
+  const audio = new AudioContext();
+  let session: Awaited<ReturnType<typeof createFilmSession>> | undefined;
+  let stream: MediaStream | undefined;
+  const destination = audio.createMediaStreamDestination();
+  // A silent, active source keeps the recorder's audio clock running even in a photo-only film.
+  const clock = audio.createConstantSource();
+  clock.offset.value = 0;
+  clock.connect(destination);
+  clock.start();
   try {
-    imgs = await Promise.all(
-      photos.map(async (p) => {
-        if (p.kind !== "video") return image(p.src);
-        const video = document.createElement("video");
-        video.playsInline = true;
-        video.preload = "auto";
-        video.src = p.src;
-        await new Promise<void>((resolve, reject) => {
-          const t = setTimeout(
-            () => reject(new Error("A video could not be opened.")),
-            15000,
-          );
-          video.onloadeddata = () => {
-            clearTimeout(t);
-            resolve();
-          };
-          video.onerror = () => {
-            clearTimeout(t);
-            reject(new Error("A video format is not supported here."));
-          };
-        });
-        attach(video, story.voice?.src?.length ? 0.4 : 1);
-        return video;
-      }),
-    );
-    for (const [source, gain] of [
-      [story.music, story.voice?.src?.length ? 0.14 : 0.35],
-      [story.voice, 1],
-    ] as const) {
-      if (source) {
-        const track = new Audio(source.src);
-        attach(track, gain);
-        await track.play();
-      }
-    }
-  } catch (e) {
-    elements.forEach((el) => {
-      el.pause();
-      el.removeAttribute("src");
-      el.load();
+    await audio.resume();
+    session = await createFilmSession(person, photos, story, signal);
+    if (signal.aborted)
+      throw new DOMException("Export cancelled", "AbortError");
+    session.connectAudio(audio, destination);
+    session.sync(0, false, audio);
+    session.draw(ctx, 0);
+    stream = canvas.captureStream(30);
+    const recorded = new MediaStream([
+      ...stream.getVideoTracks(),
+      ...destination.stream.getAudioTracks(),
+    ]);
+    const recorder = new MediaRecorder(recorded, {
+      mimeType,
+      videoBitsPerSecond: 5000000,
     });
-    await audioContext.close();
-    throw e;
-  }
-  const stream = canvas.captureStream(30),
-    recorder = new MediaRecorder(
-      new MediaStream([
-        ...stream.getVideoTracks(),
-        ...audioDestination.stream.getAudioTracks(),
-      ]),
-      {
-        mimeType,
-        videoBitsPerSecond: 5000000,
-      },
-    );
-  const chunks: Blob[] = [];
-  return new Promise((resolve, reject) => {
-    let lastScene = -1;
-    let frame = 0,
-      settled = false;
-    const start = performance.now();
-    function cleanup() {
-      cancelAnimationFrame(frame);
-      stream.getTracks().forEach((t) => t.stop());
-      audioDestination.stream.getTracks().forEach((t) => t.stop());
-      elements.forEach((el) => {
-        el.pause();
-        el.removeAttribute("src");
-        el.load();
-      });
-      void audioContext.close();
-      signal.removeEventListener("abort", abort);
-    }
-    function abort() {
-      if (settled) return;
-      settled = true;
-      if (recorder.state !== "inactive") recorder.stop();
-      cleanup();
-      reject(new DOMException("Export cancelled", "AbortError"));
-    }
-    recorder.ondataavailable = (e) => {
-      if (e.data.size) chunks.push(e.data);
-    };
-    recorder.onerror = () => {
-      settled = true;
-      cleanup();
-      reject(new Error("Video recording failed. Please retry."));
-    };
-    recorder.onstop = () => {
-      cleanup();
-      if (!settled) {
-        settled = true;
-        resolve(new Blob(chunks, { type: mimeType.split(";")[0] }));
-      }
-    };
-    signal.addEventListener("abort", abort);
-    if (signal.aborted) {
-      abort();
-      return;
-    }
-    recorder.start(250);
-    function draw() {
-      const elapsed = (performance.now() - start) / 1000,
-        t = Math.min(elapsed / story.duration, 1);
-      progress(t);
-      ctx.fillStyle = "#34263d";
-      ctx.fillRect(0, 0, w, h);
-      if (imgs.length) {
-        const position = t * imgs.length,
-          i = Math.min(Math.floor(position), imgs.length - 1),
-          zoom = 1 + (position % 1) * 0.035;
-        if (i !== lastScene) {
-          if (lastScene >= 0 && imgs[lastScene] instanceof HTMLVideoElement)
-            (imgs[lastScene] as HTMLVideoElement).pause();
-          lastScene = i;
-          if (imgs[i] instanceof HTMLVideoElement) {
-            const video = imgs[i] as HTMLVideoElement;
-            video.currentTime = 0;
-            void video.play().catch(() => {
-              if (!settled) {
-                settled = true;
-                recorder.stop();
-                cleanup();
-                reject(
-                  new Error(
-                    "The clip could not play. Try another video format.",
-                  ),
-                );
-              }
-            });
-          }
+    const film = session;
+    const result = await new Promise<Blob>((resolve, reject) => {
+      const chunks: Blob[] = [];
+      let frame = 0,
+        finished = false;
+      const stop = () => {
+        cancelAnimationFrame(frame);
+        film.pause();
+      };
+      const fail = (error: unknown) => {
+        if (finished) return;
+        finished = true;
+        stop();
+        if (recorder.state !== "inactive") recorder.stop();
+        reject(error);
+      };
+      const abort = () =>
+        fail(new DOMException("Export cancelled", "AbortError"));
+      const hidden = () => {
+        if (document.visibilityState === "hidden")
+          fail(
+            new Error(
+              "Export paused because the app left the screen. Your draft is safe; keep the app open and retry.",
+            ),
+          );
+      };
+      const remove = () => {
+        signal.removeEventListener("abort", abort);
+        document.removeEventListener("visibilitychange", hidden);
+      };
+      recorder.ondataavailable = (e) => {
+        if (e.data.size) chunks.push(e.data);
+      };
+      recorder.onerror = () => {
+        remove();
+        fail(
+          new Error(
+            "The encoder stopped unexpectedly. Retry or export a collage.",
+          ),
+        );
+      };
+      recorder.onstop = () => {
+        remove();
+        stop();
+        if (!finished) {
+          finished = true;
+          if (!chunks.length)
+            reject(
+              new Error("The encoder produced an empty file. Please retry."),
+            );
+          else resolve(new Blob(chunks, { type: mimeType.split(";")[0] }));
         }
-        ctx.save();
-        ctx.translate(w / 2, h / 2);
-        ctx.scale(zoom, zoom);
-        fit(ctx, imgs[i], -w / 2, -h / 2, w, h);
-        ctx.restore();
-        const g = ctx.createLinearGradient(0, h * 0.3, 0, h);
-        g.addColorStop(0, "transparent");
-        g.addColorStop(1, "rgba(25,17,29,.9)");
-        ctx.fillStyle = g;
-        ctx.fillRect(0, 0, w, h);
-        ctx.fillStyle = "#fff";
-        ctx.textAlign = "center";
-        ctx.font = `${Math.min(w * 0.037, h * 0.038)}px sans-serif`;
-        wrap(
-          ctx,
-          photos[i].caption,
-          w / 2,
-          h * 0.76,
-          w * 0.8,
-          Math.min(w * 0.055, h * 0.05),
-        );
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      document.addEventListener("visibilitychange", hidden);
+      if (signal.aborted) {
+        remove();
+        abort();
+        return;
       }
-      ctx.fillStyle = "#fff5df";
-      ctx.textAlign = "center";
-      ctx.font = `italic ${w * 0.073}px Georgia`;
-      ctx.fillText(`For ${person.name},`, w / 2, h * 0.14, w * 0.85);
-      ctx.font = `${w * 0.025}px sans-serif`;
-      ctx.fillText("WITH LOVE, ALWAYS", w / 2, h * 0.19);
-      if (t > 0.88 || !imgs.length) {
-        imgs.forEach((img) => {
-          if (img instanceof HTMLVideoElement) img.pause();
-        });
-        ctx.fillStyle = "rgba(47,33,52,.94)";
-        ctx.fillRect(0, 0, w, h);
-        ctx.fillStyle = "#f5e1ac";
-        ctx.font = `italic ${Math.min(w * 0.07, h * 0.045)}px Georgia`;
-        wrap(
-          ctx,
-          story.closing,
-          w / 2,
-          h * 0.38,
-          w * 0.8,
-          Math.min(w * 0.09, h * 0.07),
-        );
+      try {
+        recorder.start(250);
+      } catch (error) {
+        remove();
+        fail(error);
+        return;
       }
-      if (t < 1) frame = requestAnimationFrame(draw);
-      else recorder.stop();
-    }
-    draw();
-  });
+      const start = performance.now();
+      let lastFrame = start;
+      const draw = () => {
+        if (finished) return;
+        try {
+          const now = performance.now();
+          if (now - lastFrame > 1500)
+            throw new Error(
+              "The device paused video rendering. Keep the app visible and retry, or export a collage.",
+            );
+          lastFrame = now;
+          const seconds = Math.min((now - start) / 1000, story.duration);
+          film.sync(seconds, seconds < story.duration, audio);
+          film.draw(ctx, seconds);
+          progress(seconds / story.duration);
+          if (seconds >= story.duration) {
+            film.pause();
+            recorder.stop();
+          } else frame = requestAnimationFrame(draw);
+        } catch (error) {
+          remove();
+          fail(error);
+        }
+      };
+      draw();
+    });
+    await verifyVideoDuration(result, story.duration, signal);
+    return result;
+  } finally {
+    session?.dispose();
+    stream?.getTracks().forEach((t) => t.stop());
+    destination.stream.getTracks().forEach((t) => t.stop());
+    clock.stop();
+    clock.disconnect();
+    await audio.close().catch(() => {});
+  }
+}
+
+export async function verifyVideoDuration(
+  blob: Blob,
+  seconds: number,
+  signal: AbortSignal,
+) {
+  const url = URL.createObjectURL(blob),
+    video = document.createElement("video");
+  video.preload = "auto";
+  video.muted = true;
+  try {
+    await loadMedia(video, url, signal);
+    if (
+      !Number.isFinite(video.duration) ||
+      Math.abs(video.duration - seconds) > Math.max(0.75, seconds * 0.03)
+    )
+      throw new Error(
+        "The recorded film did not retain its full length. Keep the app visible and retry, or export a collage.",
+      );
+  } finally {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+    URL.revokeObjectURL(url);
+  }
 }
 export async function saveExport(blob: Blob, filename: string, share = false) {
   if (Capacitor.isNativePlatform()) {

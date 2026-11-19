@@ -13,7 +13,7 @@ export default function VaultGate({
   children: (lock: () => Promise<void>) => ReactNode;
 }) {
   const [mode, setMode] = useState<
-    "loading" | "setup" | "unlock" | "open" | "error"
+    "loading" | "setup" | "unlock" | "locking" | "open" | "error"
   >("loading");
   const [password, setPassword] = useState(""),
     [confirm, setConfirm] = useState(""),
@@ -32,17 +32,20 @@ export default function VaultGate({
       });
   }, []);
   async function lock() {
-    setMode("unlock");
+    if (modeRef.current !== "open") return;
+    modeRef.current = "locking";
+    setMode("locking");
     setPassword("");
     setConfirm("");
     try {
       await flushStorage();
-      lockVault();
     } catch {
       setError(
         "Your latest change could not be saved. Reopen the vault and check your draft.",
       );
+    } finally {
       lockVault();
+      setMode("unlock");
     }
   }
   useEffect(() => {
@@ -103,7 +106,7 @@ export default function VaultGate({
             ? "Create a passphrase to encrypt your people, photos, videos, and drafts. Existing local memories will be moved into this vault."
             : "Your passphrase unlocks this device’s encrypted vault. It is never sent to a server."}
         </p>
-        {mode === "loading" ? (
+        {mode === "loading" || mode === "locking" ? (
           <LoaderCircle className="spin" />
         ) : (
           mode !== "error" && (

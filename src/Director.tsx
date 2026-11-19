@@ -5,9 +5,11 @@ import { validatePlan, type DirectorPlan } from "./edit-plan.mjs";
 export default function Director({
   photos,
   onApply,
+  editRevision,
 }: {
   photos: Photo[];
   onApply: (plan: DirectorPlan) => void;
+  editRevision?: string;
 }) {
   const [prompt, setPrompt] = useState(""),
     [consent, setConsent] = useState(false),
@@ -16,6 +18,31 @@ export default function Director({
     [plan, setPlan] = useState<DirectorPlan>(),
     [undo, setUndo] = useState(false);
   const request = useRef<AbortController | undefined>(undefined);
+  const revision = JSON.stringify([
+    editRevision,
+    photos.map((p) => [
+      p.id,
+      p.name,
+      p.caption,
+      p.selected,
+      p.pinned,
+      p.kind,
+      p.durationSeconds,
+      p.trimStart,
+      p.trimEnd,
+      p.focalX,
+      p.focalY,
+      p.holdWeight,
+    ]),
+  ]);
+  const current = useRef(revision);
+  current.current = revision;
+  const planRevision = useRef("");
+  useEffect(() => {
+    request.current?.abort();
+    setBusy(false);
+    setPlan(undefined);
+  }, [revision]);
   useEffect(() => () => request.current?.abort(), []);
   return (
     <section className="director">
@@ -36,6 +63,7 @@ export default function Director({
         placeholder="Start funny, include the beach photos, then finish with a heartfelt birthday message. Keep it natural, 45 seconds."
         value={prompt}
         onChange={(e) => {
+          request.current?.abort();
           setPrompt(e.target.value);
           setPlan(undefined);
         }}
@@ -44,11 +72,16 @@ export default function Director({
         <input
           type="checkbox"
           checked={consent}
-          onChange={(e) => setConsent(e.target.checked)}
+          onChange={(e) => {
+            request.current?.abort();
+            setConsent(e.target.checked);
+            setPlan(undefined);
+          }}
         />
-        Allow these instructions, selected file labels, and existing captions to
-        be read by the local AI service for this request. Photos, videos, names,
-        and birthdays are not uploaded automatically.
+        Allow these instructions, selected file labels, captions, and clip
+        lengths to be read by the local AI service for this request. File labels
+        can contain names. Media files and saved profile details stay on this
+        device.
       </label>
       <div className="director-status">
         <ShieldCheck size={13} />
@@ -64,6 +97,7 @@ export default function Director({
             setError("");
             setPlan(undefined);
             const controller = new AbortController();
+            const requestedRevision = revision;
             request.current = controller;
             const timeout = setTimeout(() => controller.abort(), 120000);
             try {
@@ -82,6 +116,8 @@ export default function Director({
                       id: p.id,
                       label: p.name.slice(0, 100),
                       caption: p.caption,
+                      kind: p.kind ?? "photo",
+                      durationSeconds: p.durationSeconds,
                     })),
                 }),
                 signal: controller.signal,
@@ -93,13 +129,25 @@ export default function Director({
                     : "The director is unavailable. Nothing was changed.",
                 );
               const value = await response.json();
+              if (
+                controller.signal.aborted ||
+                current.current !== requestedRevision
+              )
+                return;
+              planRevision.current = requestedRevision;
               setPlan(
                 validatePlan(
                   value,
                   photos.filter((p) => p.selected).map((p) => p.id),
+                  photos,
                 ),
               );
             } catch (e) {
+              if (
+                request.current !== controller ||
+                current.current !== requestedRevision
+              )
+                return;
               setError(
                 (e as Error).name === "AbortError"
                   ? "The request timed out or was cancelled. Nothing was changed."
@@ -107,7 +155,7 @@ export default function Director({
               );
             } finally {
               clearTimeout(timeout);
-              setBusy(false);
+              if (request.current === controller) setBusy(false);
             }
           }}
         >
@@ -132,7 +180,7 @@ export default function Director({
           {error}
         </p>
       )}
-      {plan && (
+      {plan && planRevision.current === revision && (
         <div className="director-plan">
           <strong>{plan.summary}</strong>
           <p>
@@ -144,6 +192,12 @@ export default function Director({
             ))}
           </ol>
           <p>Closing: {plan.closing}</p>
+          {plan.clips?.map((c) => (
+            <p key={c.id}>
+              Trim {photos.find((p) => p.id === c.id)?.name}: {c.start}s–{c.end}
+              s
+            </p>
+          ))}
           <button
             className="button plum"
             onClick={() => {

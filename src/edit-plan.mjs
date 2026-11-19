@@ -1,4 +1,4 @@
-export function validatePlan(value, allowedIds) {
+export function validatePlan(value, allowedIds, media = []) {
   const p = value;
   if (
     !p ||
@@ -30,6 +30,34 @@ export function validatePlan(value, allowedIds) {
     );
   if (allowedIds.length && !p.sequence.length)
     throw new Error("The plan needs at least one of your selected memories.");
+  if (
+    new Set(p.captions.map((c) => c.id)).size !== p.captions.length ||
+    p.captions.some((c) => !p.sequence.includes(c.id))
+  )
+    throw new Error("Captions must refer to distinct memories in this plan.");
+  const clips = p.clips ?? [];
+  if (
+    !Array.isArray(clips) ||
+    clips.length > 100 ||
+    new Set(clips.map((c) => c?.id)).size !== clips.length ||
+    clips.some((c) => {
+      const source = media.find((m) => m.id === c?.id);
+      return (
+        !c ||
+        !p.sequence.includes(c.id) ||
+        source?.kind !== "video" ||
+        !Number.isFinite(source.durationSeconds) ||
+        !Number.isFinite(c.start) ||
+        !Number.isFinite(c.end) ||
+        c.start < 0 ||
+        c.end <= c.start ||
+        c.end > source.durationSeconds
+      );
+    })
+  )
+    throw new Error(
+      "The director suggested an invalid clip range. Nothing was changed.",
+    );
   return {
     summary: p.summary,
     tone: p.tone,
@@ -38,6 +66,9 @@ export function validatePlan(value, allowedIds) {
     sequence: p.sequence,
     captions: p.captions.map((c) => ({ id: c.id, text: c.text })),
     closing: p.closing,
+    ...(clips.length
+      ? { clips: clips.map((c) => ({ id: c.id, start: c.start, end: c.end })) }
+      : {}),
   };
 }
 export const planSchema = {
@@ -67,5 +98,18 @@ export const planSchema = {
       },
     },
     closing: { type: "string" },
+    clips: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "start", "end"],
+        properties: {
+          id: { type: "string" },
+          start: { type: "number" },
+          end: { type: "number" },
+        },
+      },
+    },
   },
 };

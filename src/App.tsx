@@ -61,6 +61,14 @@ import "./security.css";
 import SecurityCenter from "./SecurityCenter";
 import Director from "./Director";
 import type { DirectorPlan } from "./edit-plan.mjs";
+import { similarFingerprint } from "./media-analysis";
+import { prepareBirthdays } from "./autopilot";
+import ClipEditor from "./ClipEditor";
+import "./intelligence.css";
+import { syncReminders } from "./reminders";
+import FilmPreview from "./FilmPreview";
+import MemoryFraming from "./MemoryFraming";
+import ExportPreview from "./ExportPreview";
 
 type Page = "Home" | "People" | "Upcoming" | "Memories" | "Settings";
 type Flow = "review" | "studio" | "export";
@@ -71,6 +79,7 @@ const nav = [
   { name: "Memories", icon: Images },
 ] as const;
 const uid = () => crypto.randomUUID();
+const thumbnail = (p?: Photo) => p?.poster || p?.src || "/photos/family.jpg";
 const dateToday = new Intl.DateTimeFormat("en", {
   weekday: "long",
   month: "long",
@@ -92,12 +101,39 @@ export default function App({ onLock }: { onLock: () => Promise<void> }) {
   const [loadError, setLoadError] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const saveQueue = useRef(Promise.resolve());
+  const [reminderError, setReminderError] = useState("");
+  const reminderKey = state
+    ? JSON.stringify([
+        state.people.map((p) => [p.id, p.birthday, p.demo]),
+        state.reminderDays,
+        state.remindersEnabled,
+      ])
+    : "";
+  useEffect(() => {
+    if (!state) return;
+    void syncReminders(state)
+      .then(() => setReminderError(""))
+      .catch(() =>
+        setReminderError(
+          "Reminders could not be updated. Reopen notification settings and try again.",
+        ),
+      );
+  }, [reminderKey]);
   useEffect(() => {
     loadState()
-      .then((s) => setState(s || seed()))
+      .then((s) => setState(prepareBirthdays(s || seed())))
       .catch(() => {
         setLoadError(true);
       });
+  }, []);
+  useEffect(() => {
+    const prepare = () => setState((s) => (s ? prepareBirthdays(s) : s));
+    const timer = window.setInterval(prepare, 60000);
+    window.addEventListener("focus", prepare);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", prepare);
+    };
   }, []);
   useEffect(() => {
     if (!state) return;
@@ -177,7 +213,10 @@ export default function App({ onLock }: { onLock: () => Promise<void> }) {
     }
     setBusy(`Preparing ${files.length} photo${files.length === 1 ? "" : "s"}…`);
     const added: Photo[] = [];
-    let importedSize=state!.photos.reduce((sum,p)=>sum+p.src.length+(p.poster?.length||0),0);
+    let importedSize = state!.photos.reduce(
+      (sum, p) => sum + p.src.length + (p.poster?.length || 0),
+      0,
+    );
     let rejected = 0;
     const existing = new Set(
       state!.photos
@@ -190,10 +229,33 @@ export default function App({ onLock }: { onLock: () => Promise<void> }) {
         const image = file.type.startsWith("video/")
           ? await importVideo(file)
           : await importImage(file);
-        const incomingSize=image.src.length+('poster' in image&&typeof image.poster==='string'?image.poster.length:0);
-        if(importedSize+incomingSize>54*1024*1024){rejected++;continue;}
-        importedSize+=incomingSize;
+        const incomingSize =
+          image.src.length +
+          ("poster" in image && typeof image.poster === "string"
+            ? image.poster.length
+            : 0);
+        if (importedSize + incomingSize > 54 * 1024 * 1024) {
+          rejected++;
+          continue;
+        }
+        importedSize += incomingSize;
         const duplicate = existing.has(image.hash);
+        const near =
+          "quality" in image &&
+          [
+            ...state!.photos.filter((p) => p.personId === person.id),
+            ...added,
+          ].some((p) =>
+            similarFingerprint(
+              p.quality?.fingerprint,
+              image.quality?.fingerprint,
+            ),
+          );
+        const reason = duplicate
+          ? "Exact duplicate"
+          : near
+            ? "Similar memory — compare before using"
+            : image.reason;
         existing.add(image.hash);
         added.push({
           id: uid(),
@@ -201,8 +263,8 @@ export default function App({ onLock }: { onLock: () => Promise<void> }) {
           ...image,
           name: file.name,
           caption: "",
-          selected: !duplicate && !image.reason,
-          reason: duplicate ? "Exact duplicate" : image.reason,
+          selected: !reason,
+          reason,
         });
       } catch {
         rejected++;
@@ -348,6 +410,57 @@ export default function App({ onLock }: { onLock: () => Promise<void> }) {
                         Add someone
                       </button>
                     </div>
+                    <section className="autopilot-card">
+                      <div>
+                        <span className="eyebrow">CELEBRATION AUTOPILOT</span>
+                        <h2>A thoughtful head start.</h2>
+                        <p>
+                          {state.autopilotEnabled
+                            ? "Upcoming birthdays get a private draft when you open Keepsake. Review it, make it yours, and choose when to share."
+                            : "Let Keepsake prepare birthday drafts from your approved memories when you open the app."}
+                        </p>
+                      </div>
+                      <button
+                        className="button outline"
+                        onClick={() =>
+                          update((s) =>
+                            prepareBirthdays({
+                              ...s,
+                              autopilotEnabled: !s.autopilotEnabled,
+                            }),
+                          )
+                        }
+                      >
+                        {state.autopilotEnabled
+                          ? "Pause preparation"
+                          : "Enable preparation"}
+                      </button>
+                      {state.stories
+                        .filter((s) => s.preparedByAutopilot)
+                        .slice(0, 3)
+                        .map((s) => {
+                          const p = state.people.find(
+                            (p) => p.id === s.personId,
+                          );
+                          return p ? (
+                            <button
+                              key={s.id}
+                              className="autopilot-draft"
+                              onClick={() => openPerson(p)}
+                            >
+                              <span>
+                                <strong>{p.name}’s birthday draft</strong>
+                                <small>
+                                  {s.photoIds.length
+                                    ? `${s.photoIds.length} approved memories`
+                                    : "Personal card ready · add memories anytime"}
+                                </small>
+                              </span>
+                              <ArrowRight size={18} />
+                            </button>
+                          ) : null;
+                        })}
+                    </section>
                     <div className="home-columns">
                       <div className="home-primary">
                         <div className="section-label">
@@ -361,10 +474,11 @@ export default function App({ onLock }: { onLock: () => Promise<void> }) {
                           <section className="hero-card">
                             <img
                               className="hero-image"
-                              src={
-                                state.photos.find((p) => p.personId === next.id)
-                                  ?.src || "/photos/family.jpg"
-                              }
+                              src={thumbnail(
+                                state.photos.find(
+                                  (p) => p.personId === next.id,
+                                ),
+                              )}
                               alt={
                                 state.photos.some((p) => p.personId === next.id)
                                   ? `A memory for ${next.name}`
@@ -772,11 +886,11 @@ export default function App({ onLock }: { onLock: () => Promise<void> }) {
                           return (
                             <article className="saved-story" key={s.id}>
                               <img
-                                src={
+                                src={thumbnail(
                                   state.photos.find((ph) =>
                                     s.photoIds.includes(ph.id),
-                                  )?.src || "/photos/family.jpg"
-                                }
+                                  ),
+                                )}
                                 alt={s.title}
                               />
                               <div>
@@ -867,10 +981,54 @@ export default function App({ onLock }: { onLock: () => Promise<void> }) {
                           </select>
                         </div>
                         <p className="fine-print">
-                          Scheduled notifications and background preparation are
-                          not enabled yet. Keep a copy of exports: browser data
-                          can be cleared by your device.
+                          Drafts prepare when you open the app. Keep a copy of
+                          exports: browser data can be cleared by your device.
                         </p>
+                        <div className="setting-row">
+                          <span>
+                            Private device reminders
+                            <small>
+                              Generic lock-screen text; no names, faces, or
+                              birthdays in the message. Your phone stores
+                              delivery dates.
+                            </small>
+                          </span>
+                          <button
+                            className="button outline"
+                            onClick={async () => {
+                              try {
+                                const enabled = !state.remindersEnabled;
+                                const count = await syncReminders(
+                                  { ...state, remindersEnabled: enabled },
+                                  enabled,
+                                );
+                                update((s) => ({
+                                  ...s,
+                                  remindersEnabled: enabled,
+                                }));
+                                setToast(
+                                  enabled
+                                    ? `${count} private reminders scheduled. Your phone controls delivery.`
+                                    : "Device reminders turned off.",
+                                );
+                              } catch (e) {
+                                setToast((e as Error).message);
+                              }
+                            }}
+                          >
+                            {state.remindersEnabled ? "Turn off" : "Enable"}
+                          </button>
+                        </div>
+                        <p className="fine-print">
+                          Schedules up to 60 upcoming preparation and birthday
+                          reminders, refreshed when you open the app or change
+                          birthdays. Delivery can be delayed by device settings.
+                        </p>
+                        {reminderError && (
+                          <p className="error-text" role="alert">
+                            {reminderError}
+                          </p>
+                        )}
                       </section>
                       <section className="settings-card">
                         <Images size={27} />
@@ -1346,13 +1504,26 @@ function CelebrationFlow({
     story?.closing ||
       `Happy birthday, ${person.name}. Here’s to more moments like these.`,
   );
-  const [playing, setPlaying] = useState(false);
+  const [transition, setTransition] = useState<"Fade" | "Cut">(
+    story?.transition ?? "Fade",
+  );
   const [slide, setSlide] = useState(0);
   const [kind, setKind] = useState("Collage");
   const [progress, setProgress] = useState<number>();
   const [exportBlob, setExportBlob] = useState<Blob>();
   const [exportError, setExportError] = useState("");
+  const [directorUndo, setDirectorUndo] = useState<{
+    photos: Photo[];
+    tone: string;
+    duration: number;
+    format: string;
+    closing: string;
+    transition: "Fade" | "Cut";
+  }>();
   const currentDraft = useRef<Story | undefined>(undefined);
+  const selectionRevision = JSON.stringify(
+    photos.filter((p) => p.selected).map((p) => p.id),
+  );
   currentDraft.current = {
     id: story?.id || `draft-${person.id}`,
     personId: person.id,
@@ -1365,6 +1536,9 @@ function CelebrationFlow({
     closing,
     music,
     voice,
+    occasion: story?.occasion,
+    preparedByAutopilot: story?.preparedByAutopilot,
+    transition,
   };
   useEffect(() => {
     const draft = currentDraft.current;
@@ -1373,19 +1547,46 @@ function CelebrationFlow({
       ...s,
       stories: [draft, ...s.stories.filter((st) => st.personId !== person.id)],
     }));
-  }, [tone, duration, format, closing, music, voice, flow]);
+  }, [
+    tone,
+    duration,
+    format,
+    closing,
+    music,
+    voice,
+    flow,
+    transition,
+    selectionRevision,
+  ]);
   const abort = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => abort.current?.abort(), []);
   const selected = photos.filter((p) => p.selected);
   const activePhoto = selected[slide % Math.max(selected.length, 1)];
+  const filmRevision = JSON.stringify([
+    tone,
+    duration,
+    format,
+    closing,
+    transition,
+    music?.name,
+    music?.volume,
+    voice?.name,
+    voice?.startSeconds,
+    photos.map((p) => [
+      p.id,
+      p.selected,
+      p.caption,
+      p.trimStart,
+      p.trimEnd,
+      p.focalX,
+      p.focalY,
+      p.holdWeight,
+    ]),
+  ]);
   useEffect(() => {
-    if (!playing) return;
-    const t = setInterval(
-      () => setSlide((s) => (s + 1) % Math.max(selected.length, 1)),
-      (duration * 1000) / Math.max(selected.length, 1),
-    );
-    return () => clearInterval(t);
-  }, [playing, selected.length, duration]);
+    setExportBlob(undefined);
+    abort.current?.abort();
+  }, [filmRevision, music?.src, voice?.src]);
   function patchPhoto(id: string, values: Partial<Photo>) {
     update((s) => ({
       ...s,
@@ -1416,10 +1617,13 @@ function CelebrationFlow({
       duration,
       format,
       photoIds: selected.map((p) => p.id),
+      occasion: story?.occasion,
+      preparedByAutopilot: story?.preparedByAutopilot,
       created: story?.created || new Date().toISOString(),
       closing,
       music,
       voice,
+      transition,
     };
     update((s) => ({
       ...s,
@@ -1550,8 +1754,9 @@ function CelebrationFlow({
             <div>
               <strong>A private selection, made by you.</strong>
               <span>
-                Choose photos of {person.name}. Exact duplicates and
-                low-resolution images are flagged locally. Face matching and
+                Choose photos of {person.name}. Duplicates, similar photos, low
+                resolution, and possible blur or exposure issues are flagged
+                locally. These are review hints. Face matching and
                 sensitive-photo detection are not enabled.
               </span>
             </div>
@@ -1620,7 +1825,10 @@ function CelebrationFlow({
                       aria-pressed={p.selected}
                       disabled={p.pinned}
                       onClick={() =>
-                        patchPhoto(p.id, { selected: !p.selected })
+                        patchPhoto(p.id, {
+                          selected: !p.selected,
+                          reviewed: !p.selected ? true : p.reviewed,
+                        })
                       }
                     >
                       <img src={p.poster || p.src} alt={p.name} />
@@ -1714,56 +1922,12 @@ function CelebrationFlow({
       {flow === "studio" && (
         <div className="studio-layout">
           <div className="preview-area">
-            <div
-              className={`story-preview ${tone.toLowerCase()} format-${format.toLowerCase()}`}
-            >
-              {activePhoto ? (
-                activePhoto.kind === "video" ? (
-                  <video
-                    className="media-video"
-                    src={activePhoto.src}
-                    poster={activePhoto.poster}
-                    controls
-                    playsInline
-                    preload="metadata"
-                  />
-                ) : (
-                  <img
-                    key={activePhoto.id}
-                    src={activePhoto.src}
-                    alt={activePhoto.name}
-                  />
-                )
-              ) : (
-                <div className="text-preview-bg" />
-              )}
-              <div className="preview-gradient" />
-              <div className="preview-top-label">
-                A LITTLE SOMETHING, JUST FOR YOU
-              </div>
-              <div className="preview-title">
-                For {person.name},<br />
-                <em>with love.</em>
-              </div>
-              <span className="preview-spark">✧</span>
-              <div className="preview-caption">
-                {activePhoto?.caption || closing}
-              </div>
-              <span className="preview-bottom">
-                HAPPY BIRTHDAY <Heart size={12} />
-              </span>
-              <button
-                className="preview-play"
-                aria-label={playing ? "Pause preview" : "Play preview"}
-                onClick={() => setPlaying(!playing)}
-              >
-                {playing ? (
-                  <Pause fill="currentColor" size={18} />
-                ) : (
-                  <Play fill="currentColor" size={18} />
-                )}
-              </button>
-            </div>
+            <FilmPreview
+              person={person}
+              photos={selected}
+              story={currentDraft.current!}
+              activeIndex={slide % Math.max(selected.length, 1)}
+            />
             <div className="preview-controls">
               <button
                 className="icon-button"
@@ -1797,7 +1961,16 @@ function CelebrationFlow({
           <div className="studio-settings">
             <Director
               photos={photos}
+              editRevision={filmRevision}
               onApply={(plan: DirectorPlan) => {
+                setDirectorUndo({
+                  photos: photos.map((p) => ({ ...p })),
+                  tone,
+                  duration,
+                  format,
+                  closing,
+                  transition,
+                });
                 const keep = photos
                   .filter((p) => p.pinned && !plan.sequence.includes(p.id))
                   .map((p) => p.id);
@@ -1810,6 +1983,13 @@ function CelebrationFlow({
                     .map((p) => ({
                       ...p,
                       selected: true,
+                      ...(plan.clips?.find((c) => c.id === p.id)
+                        ? {
+                            trimStart: plan.clips.find((c) => c.id === p.id)!
+                              .start,
+                            trimEnd: plan.clips.find((c) => c.id === p.id)!.end,
+                          }
+                        : {}),
                       caption:
                         plan.captions.find((c) => c.id === p.id)?.text ||
                         p.caption,
@@ -1837,6 +2017,60 @@ function CelebrationFlow({
                 );
               }}
             />
+            {directorUndo && (
+              <button
+                className="button outline full"
+                onClick={() => {
+                  const previous = directorUndo;
+                  update((s) => ({
+                    ...s,
+                    photos: [
+                      ...s.photos.filter((p) => p.personId !== person.id),
+                      ...previous.photos,
+                    ],
+                  }));
+                  setTone(previous.tone);
+                  setDuration(previous.duration);
+                  setFormat(previous.format);
+                  setClosing(previous.closing);
+                  setTransition(previous.transition);
+                  setDirectorUndo(undefined);
+                  setExportBlob(undefined);
+                  setSlide(0);
+                  notify("Previous edit restored.");
+                }}
+              >
+                Undo last Director plan
+              </button>
+            )}
+            {activePhoto?.kind === "video" && (
+              <ClipEditor
+                photo={activePhoto}
+                onChange={(values) => patchPhoto(activePhoto.id, values)}
+              />
+            )}
+            {activePhoto && (
+              <MemoryFraming
+                photo={activePhoto}
+                photos={selected}
+                duration={duration}
+                onChange={(values) => patchPhoto(activePhoto.id, values)}
+              />
+            )}
+            <label>
+              Between memories
+              <select
+                aria-label="Film transition"
+                value={transition}
+                onChange={(e) => {
+                  setTransition(e.target.value as "Fade" | "Cut");
+                  setExportBlob(undefined);
+                }}
+              >
+                <option value="Fade">Soft dissolve</option>
+                <option value="Cut">Clean cut</option>
+              </select>
+            </label>
             <div className="panel-label">
               <SlidersHorizontal size={17} />
               THE FINISHING TOUCHES
@@ -1845,6 +2079,40 @@ function CelebrationFlow({
               Make it feel <em>like them.</em>
             </h2>
             <label>Find your mood</label>
+            {music && (
+              <label className="audio-options">
+                Music level · {Math.round((music.volume ?? 0.35) * 100)}%
+                <input
+                  aria-label="Music volume"
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={music.volume ?? 0.35}
+                  onChange={(e) => {
+                    setMusic({ ...music, volume: +e.target.value });
+                    setExportBlob(undefined);
+                  }}
+                />
+              </label>
+            )}
+            {voice && (
+              <label className="audio-options">
+                Voice starts at · {voice.startSeconds ?? 0}s
+                <input
+                  aria-label="Voice message start time"
+                  type="range"
+                  min="0"
+                  max={duration - 1}
+                  step="1"
+                  value={Math.min(voice.startSeconds ?? 0, duration - 1)}
+                  onChange={(e) => {
+                    setVoice({ ...voice, startSeconds: +e.target.value });
+                    setExportBlob(undefined);
+                  }}
+                />
+              </label>
+            )}
             <div className="audio-options">
               <strong>Your real sound.</strong>
               {(["music", "voice"] as const).map((kind) => (
@@ -1873,7 +2141,18 @@ function CelebrationFlow({
                         notify("Choose an audio file under 10 MB.");
                         return;
                       }
-                      try{const value = {src: await fileData(file),name: file.name};(kind === "music" ? setMusic : setVoice)(value);setExportBlob(undefined);}catch{notify('The audio file could not be read. Please try another file.');}
+                      try {
+                        const value = {
+                          src: await fileData(file),
+                          name: file.name,
+                        };
+                        (kind === "music" ? setMusic : setVoice)(value);
+                        setExportBlob(undefined);
+                      } catch {
+                        notify(
+                          "The audio file could not be read. Please try another file.",
+                        );
+                      }
                     }}
                   />
                   {(kind === "music" ? music : voice) && (
@@ -1897,8 +2176,8 @@ function CelebrationFlow({
                 </label>
               ))}
               <p className="fine-print">
-                Music is softened when a voice message is present. Use audio you
-                have permission to share.
+                Music lowers while your voice message plays. Use audio you have
+                permission to share.
               </p>
             </div>
             <div className="tone-options">
@@ -2022,7 +2301,6 @@ function CelebrationFlow({
                 disabled={!selected.length && photos.length > 0}
                 onClick={() => {
                   saveDraft();
-                  setPlaying(false);
                   setFlow("export");
                 }}
               >
@@ -2038,7 +2316,7 @@ function CelebrationFlow({
             <div className="export-polaroid">
               {selected[0] ? (
                 <img
-                  src={selected[0].src}
+                  src={selected[0].poster || selected[0].src}
                   alt="First memory in your celebration"
                 />
               ) : (
@@ -2130,8 +2408,8 @@ function CelebrationFlow({
             {kind === "Video" && (
               <p className="fine-print">
                 Video records in real time. Keep this screen open for {duration}{" "}
-                seconds. MP4 when supported; otherwise WebM. Photos use a
-                centered crop.
+                seconds. MP4 when supported; otherwise WebM. Photos use the
+                framing you chose in the editor.
               </p>
             )}
             <div className="export-privacy">
@@ -2167,6 +2445,7 @@ function CelebrationFlow({
                   Ready · {(exportBlob.size / 1024 / 1024).toFixed(1)} MB ·{" "}
                   {exportBlob.type.split("/")[1].toUpperCase()}
                 </div>
+                <ExportPreview blob={exportBlob} />
                 <button
                   className="button plum full"
                   onClick={() =>

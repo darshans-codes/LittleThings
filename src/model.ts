@@ -8,6 +8,14 @@ export type Person = {
   demo?: boolean;
 };
 export type Photo = {
+  focalX?: number;
+  focalY?: number;
+  holdWeight?: number;
+  quality?: import("./media-analysis").Quality;
+  reviewed?: boolean;
+  durationSeconds?: number;
+  trimStart?: number;
+  trimEnd?: number;
   kind?: "photo" | "video";
   poster?: string;
   pinned?: boolean;
@@ -22,8 +30,11 @@ export type Photo = {
   demo?: boolean;
 };
 export type Story = {
-  music?: { src: string; name: string };
-  voice?: { src: string; name: string };
+  transition?: "Fade" | "Cut";
+  occasion?: string;
+  preparedByAutopilot?: boolean;
+  music?: { src: string; name: string; volume?: number };
+  voice?: { src: string; name: string; startSeconds?: number };
   id: string;
   personId: string;
   title: string;
@@ -35,6 +46,8 @@ export type Story = {
   closing: string;
 };
 export type State = {
+  autopilotEnabled?: boolean;
+  remindersEnabled?: boolean;
   people: Person[];
   photos: Photo[];
   stories: Story[];

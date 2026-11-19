@@ -10,6 +10,7 @@ import {
   type Envelope,
 } from "./vault-crypto";
 import { validateState } from "./validation";
+import { analyzeCanvas } from "./media-analysis";
 const db = openDB("keepsake-local", 1, {
   upgrade(d) {
     d.createObjectStore("app");
@@ -136,10 +137,15 @@ export async function importImage(file: File) {
   ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   const small = Math.min(bitmap.width, bitmap.height) < 350;
   bitmap.close();
+  const quality = analyzeCanvas(canvas);
   return {
     src: canvas.toDataURL("image/jpeg", 0.88),
     hash,
-    reason: small ? "Low resolution — review before using" : undefined,
+    quality,
+    reason:
+      [small ? "Low resolution — review before using" : "", ...quality.issues]
+        .filter(Boolean)
+        .join(" · ") || undefined,
   };
 }
 export function fileData(file: File): Promise<string> {
@@ -196,6 +202,7 @@ export async function importVideo(file: File) {
       src: await fileData(file),
       poster: canvas.toDataURL("image/jpeg", 0.8),
       kind: "video" as const,
+      durationSeconds: video.duration,
       hash,
       reason: undefined,
     };

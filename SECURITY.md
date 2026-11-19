@@ -30,3 +30,17 @@ This development build implements encryption and release hardening. It has not p
 Tests cover authenticated encryption round trips, wrong-password and tamper rejection, nonce uniqueness, schema validation, atomic legacy migration, locked-storage rejection, encrypted backup recovery, AI-plan constraints and birthday scheduling. These do not replace penetration testing or native device verification.
 
 Report vulnerabilities privately to the repository owner. Never include real photos, passphrases, decrypted backups or tokens in public issues.
+
+## November implementation update
+
+Media analysis adds local perceptual-similarity, blur and exposure review hints. These are heuristics, not face recognition or sensitive-content classification. Imported analysis and review decisions are stored inside the encrypted vault and validated on restore.
+
+Optional native reminders send only generic text to the OS notification scheduler; no names, birthday fields, photos or person identifiers are included. Scheduled delivery times necessarily live outside the vault. Up to 60 pending app reminders are refreshed after unlock and birthday/preference changes. Revoking OS notification permission may prevent the app from immediately modifying pending notifications; disable reminders before revoking permissions if cancellation is required.
+
+The new iOS project includes an inactive-app privacy cover to hide the app-switcher preview. Unlike Android FLAG_SECURE, this does not block screenshots while the app is active. Native compilation and behavior must be verified on devices. Biometric unlock and hardware-backed key wrapping remain unimplemented.
+
+## Film and Director reliability update
+
+Preview/export now share the frame renderer, timeline, clip in/out rules, framing and audio mix. Video loading supports aborts and bounded timeouts; cleanup releases sources, streams and audio contexts after failure/cancellation. The recorder uses an active silent audio clock for photo-only films, detects stalled rendering, and verifies encoded duration before offering a ready file. Edited films invalidate previous exports. Real-device codecs and foreground/background behavior remain acceptance-test requirements.
+
+Director requests include consented clip lengths. Suggested trim ranges are checked against supplied video IDs/durations, captions must refer to unique selected sequence IDs, and stale requests/plans are invalidated after changes. No live model inference was verified in this update. Vault locking now finishes pending storage writes and clears the previous session key before the unlock form becomes available.
